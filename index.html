@@ -38,6 +38,7 @@
         </section>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="qr.js"></script>
     <script>
         const statusEl = document.getElementById('status');
@@ -48,6 +49,9 @@
         const itemNoteInput = document.getElementById('item-note');
         const itemQtyInput = document.getElementById('item-qty');
         const saveScanBtn = document.getElementById('save-scan-btn');
+        const SUPABASE_URL = 'https://mqfaueuimoasxoijcrek.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_ZiA3fC0I5v_LPcliHXTnWQ_S6C2MZ5D';
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
         let scanner = null;
         let isScanning = false;
         let lastScannedSku = '';
@@ -79,6 +83,66 @@
 
         function onScanFailure() {
             // biarkan kosong, agar pemindaian tetap berjalan
+        }
+
+        async function saveScanToSupabase() {
+            const sku = (lastScannedSku || '').trim();
+            if (!sku) {
+                setStatus('Belum ada barcode yang dipindai.', true);
+                return false;
+            }
+
+            const note = itemNoteInput.value.trim();
+            const qty = parseInt(itemQtyInput.value, 10) || 1;
+            const baseName = note ? `Produk ${sku} (${note})` : `Produk ${sku}`;
+
+            try {
+                const { data: existing, error: selectError } = await supabase
+                    .from('master_stok')
+                    .select('*')
+                    .eq('id', sku)
+                    .maybeSingle();
+
+                if (selectError) throw selectError;
+
+                if (existing) {
+                    const nextQty = (Number(existing.qty) || 0) + qty;
+                    const { error } = await supabase
+                        .from('master_stok')
+                        .update({
+                            qty: nextQty,
+                            nama: note ? `${existing.nama || baseName} (${note})` : existing.nama || baseName
+                        })
+                        .eq('id', existing.id)
+                        .select()
+                        .single();
+
+                    if (error) throw error;
+                } else {
+                    const newProduct = {
+                        id: sku,
+                        nama: baseName,
+                        kategori: 'Scan',
+                        harga: 0,
+                        qty
+                    };
+
+                    const { error } = await supabase.from('master_stok').insert([newProduct]).select().single();
+                    if (error) throw error;
+                }
+
+                localStorage.setItem('last_scanned_sku', sku);
+                localStorage.setItem('last_scanned_note', note);
+                localStorage.setItem('last_scanned_qty', String(qty));
+                localStorage.removeItem('pending_scan');
+                setStatus('Data barang berhasil disimpan ke database Supabase.');
+                return true;
+            } catch (err) {
+                console.error('Gagal menyimpan data scan ke Supabase:', err);
+                localStorage.setItem('pending_scan', JSON.stringify({ sku, note, qty }));
+                setStatus('Gagal menyimpan ke database. Data disimpan sementara di browser dan akan diproses saat aplikasi dibuka.', true);
+                return false;
+            }
         }
 
         async function startScanner() {
@@ -133,19 +197,11 @@
             }
         }
 
-        saveScanBtn.addEventListener('click', () => {
-            const note = itemNoteInput.value.trim();
-            const qty = parseInt(itemQtyInput.value, 10) || 1;
-            const params = new URLSearchParams({
-                sku: lastScannedSku,
-                note,
-                qty: String(qty)
-            });
-
-            localStorage.setItem('last_scanned_sku', lastScannedSku);
-            localStorage.setItem('last_scanned_note', note);
-            localStorage.setItem('last_scanned_qty', String(qty));
-            window.location.href = '../index.html?' + params.toString();
+        saveScanBtn.addEventListener('click', async () => {
+            const saved = await saveScanToSupabase();
+            if (saved) {
+                window.location.href = '../index.html';
+            }
         });
 
         startBtn.addEventListener('click', () => {
